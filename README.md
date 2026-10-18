@@ -1,4 +1,4 @@
-# SetaLab v1.1
+# SetaLab
 
 A C++11 console prototype for simulated laboratory instrument readings. **All data is synthetic.**
 
