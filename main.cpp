@@ -171,15 +171,50 @@ string readText(const string& prompt) {
     }
 }
 
+void showGuide() {
+    cout << "\n========== USER GUIDE ==========\n"
+         << "SetaLab simulates laboratory temperature and density readings.\n"
+         << "No physical instrument is connected.\n\n"
+         << "QUICK START\n"
+         << "  1. Enter an experiment ID, e.g. EXP001.\n"
+         << "  2. Enter a sample name, e.g. Diesel.\n"
+         << "  3. Select option 1 and enter 10 for ten readings.\n"
+         << "  4. Select option 2 to inspect individual readings.\n"
+         << "  5. Select option 3 to view statistics and alerts.\n"
+         << "  6. Select option 4 to view readings sorted by temperature.\n"
+         << "  7. Select option 5 and enter results.csv to export.\n\n"
+         << "MENU REFERENCE\n"
+         << "  1: Generate 1-1000 simulated readings (replaces previous run).\n"
+         << "  2: Show reading number, temperature, density, and status.\n"
+         << "  3: Show averages, minimums, maximums, and alert count.\n"
+         << "  4: Display descending temperature order without changing stored data.\n"
+         << "  5: Save the current readings as a CSV file.\n"
+         << "  6: Show this guide again.\n"
+         << "  0: Exit the program.\n\n"
+         << "ALERT RULES (SIMULATION ONLY)\n"
+         << "  Temperature outside 20-30 C or density outside 842-858 kg/m3\n"
+         << "  is marked ALERT. These are demonstration thresholds, not\n"
+         << "  validated limits for any real petroleum sample.\n\n"
+         << "CSV TIPS\n"
+         << "  Enter a filename ending in .csv, for example results.csv.\n"
+         << "  The file is written to the current working folder unless\n"
+         << "  you provide a path. Existing files with that name are replaced.\n"
+         << "  Open the exported file with Excel or a text editor.\n"
+         << "================================\n";
+}
+
 int main() {
     cout << "==============================================\n"
          << " SetaLab | Industrial Instrument Simulator\n"
-         << " C++ Console Prototype v1.0\n"
+         << " C++ Console Prototype v1.1\n"
          << " SIMULATED DATA ONLY - NOT A REAL INSTRUMENT\n"
          << "==============================================\n";
-    string id = readText("Experiment ID: ");
+    cout << "Tip: Enter 6 in the menu at any time to open the user guide.\n";
+    showGuide();
+    cout << "\n--- NEW EXPERIMENT ---\n";
+    string id = readText("Experiment ID (e.g. EXP001): ");
     if (id.empty()) return 0;
-    string sample = readText("Sample name: ");
+    string sample = readText("Sample name (e.g. Diesel): ");
     if (sample.empty()) return 0;
     Experiment experiment(id, sample);
     SensorSimulator sensor;
@@ -190,21 +225,29 @@ int main() {
              << "3. View summary and alerts\n"
              << "4. Sort readings by temperature (high to low)\n"
              << "5. Export results to CSV\n"
+             << "6. Help / User Guide\n"
              << "0. Exit\n";
-        int choice = readInt("Choose an option: ", 0, 5);
+        int choice = readInt("Choose an option (6 = Help): ", 0, 6);
         if (choice == -1 || choice == 0) { cout << "Goodbye!\n"; break; }
+        if (choice == 6) { showGuide(); continue; }
         if (choice == 1) {
             int count = readInt("Number of measurements (1-1000): ", 1, 1000);
             if (count == -1) break;
             experiment.run(count, sensor);
-            cout << "Completed " << count << " simulated measurements.\n";
+            cout << "Completed " << count << " simulated measurements.\n"
+                 << "Next: choose 2 to view readings or 3 for summary and alerts.\n";
         } else if (choice == 2) experiment.printReadings();
         else if (choice == 3) experiment.printSummary();
         else if (choice == 4) experiment.printReadings(true);
         else if (choice == 5) {
             if (!experiment.hasData()) { cout << "Run an experiment before exporting.\n"; continue; }
+            cout << "Tip: use results.csv; existing files with the same name will be overwritten.\n";
             string path = readText("CSV filename (e.g. results.csv): ");
             if (path.empty()) break;
+            if (path.size() < 5 || path.substr(path.size() - 4) != ".csv") {
+                cout << "Please use a filename ending in .csv. Export cancelled.\n";
+                continue;
+            }
             cout << (experiment.saveCsv(path) ? "CSV saved successfully.\n" : "Could not save CSV. Check the path and permissions.\n");
         }
     }
