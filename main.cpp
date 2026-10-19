@@ -74,13 +74,13 @@ private:
     vector<Measurement> readings;
     double temperatureMin, temperatureMax, densityMin, densityMax;
     int targetCount;
-    bool active, paused, finished;
+    bool active, paused, finished, stopped;
 public:
     Experiment(const string& experimentId, const string& sampleName)
         : id(experimentId), sample(sampleName),
           temperatureMin(20.0), temperatureMax(30.0),
           densityMin(842.0), densityMax(858.0),
-          targetCount(0), active(false), paused(false), finished(false) {}
+          targetCount(0), active(false), paused(false), finished(false), stopped(false) {}
 
     void run(int count, SensorSimulator& sensor) {
         start(count);
@@ -93,6 +93,7 @@ public:
         active = true;
         paused = false;
         finished = false;
+        stopped = false;
     }
     bool takeReading(SensorSimulator& sensor) {
         if (!active || paused) return false;
@@ -105,10 +106,11 @@ public:
     }
     void pause() { if (active) paused = true; }
     void resume() { if (active) paused = false; }
-    void stop() { active = false; paused = false; finished = true; }
+    void stop() { active = false; paused = false; finished = true; stopped = true; }
     bool isActive() const { return active; }
     bool isPaused() const { return paused; }
     bool isFinished() const { return finished; }
+    bool wasStopped() const { return stopped; }
     int progress() const { return static_cast<int>(readings.size()); }
     int target() const { return targetCount; }
     const Measurement* latest() const { return readings.empty() ? NULL : &readings.back(); }
@@ -262,8 +264,8 @@ void showGuide() {
          << "  triggers an alert. These limits are NOT validated for real samples.\n\n"
          << Color::use(Color::bold) << Color::use(Color::magenta) << "CSV TIPS\n" << Color::use(Color::reset)
          << "  Enter a .csv filename such as results.csv. Existing files are\n"
-         << "  overwritten. The file is saved in the working folder unless\n"
-         << "  you enter an absolute path. History uses a separate CSV file.\n"
+         << "  only overwritten after confirmation. Files are saved in the\n"
+         << "  working folder unless you enter a path. History is separate.\n"
          << "================================\n";
 }
 
@@ -272,7 +274,8 @@ void showDashboard(const Experiment& experiment) {
          << Color::use(Color::reset)
          << "Experiment: " << experiment.getId() << " | Sample: " << experiment.getSample() << "\n";
     string state = experiment.isPaused() ? "PAUSED" :
-        experiment.isActive() ? "RUNNING" : experiment.isFinished() ? "STOPPED/COMPLETE" : "READY";
+        experiment.isActive() ? "RUNNING" : experiment.wasStopped() ? "STOPPED" :
+        experiment.isFinished() ? "COMPLETE" : "READY";
     cout << "State: " << state << " | Progress: " << experiment.progress()
          << "/" << experiment.target() << "\n";
     const Measurement* m = experiment.latest();
@@ -364,6 +367,13 @@ int main() {
                 cout << Color::use(Color::yellow)
                      << "WARNING: Restart clears current readings. Export/save first if needed.\n"
                      << Color::use(Color::reset);
+            if (experiment.hasData()) {
+                string answer = readText("Discard current readings? (yes/no): ");
+                if (answer != "yes" && answer != "YES") {
+                    cout << "Restart cancelled.\n";
+                    continue;
+                }
+            }
             int count = readInt("Target number of measurements (1-1000): ", 1, 1000);
             if (count == -1) break;
             experiment.start(count);
@@ -402,6 +412,16 @@ int main() {
             if (path.size() < 5 || path.substr(path.size()-4) != ".csv") {
                 cout << "Filename must end with .csv.\n"; continue;
             }
+            {
+                ifstream existing(path.c_str());
+                if (existing.good()) {
+                    string answer = readText("File exists. Overwrite? (yes/no): ");
+                    if (answer != "yes" && answer != "YES") {
+                        cout << "Export cancelled.\n";
+                        continue;
+                    }
+                }
+            }
             cout << (experiment.saveCsv(path) ? "CSV saved successfully.\n" : "CSV save failed.\n");
         } else if (choice == 11) {
             cout << (saveHistory(experiment, historyFile) ? "Snapshot appended to experiment_history.csv.\n"
@@ -413,6 +433,13 @@ int main() {
             if (newId.empty()) break;
             string newSample = readText("New sample name: ");
             if (newSample.empty()) break;
+            if (experiment.hasData()) {
+                string answer = readText("Discard current readings and create new experiment? (yes/no): ");
+                if (answer != "yes" && answer != "YES") {
+                    cout << "New experiment cancelled.\n";
+                    continue;
+                }
+            }
             experiment = Experiment(newId, newSample);
             cout << "New experiment created.\n";
         }
