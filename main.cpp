@@ -9,6 +9,9 @@
 #include <limits>
 #include <ctime>
 #include <cmath>
+#include <chrono>
+#include <thread>
+#include <cctype>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -70,17 +73,56 @@ private:
     string id, sample;
     vector<Measurement> readings;
     double temperatureMin, temperatureMax, densityMin, densityMax;
+    int targetCount;
+    bool active, paused, finished;
 public:
     Experiment(const string& experimentId, const string& sampleName)
         : id(experimentId), sample(sampleName),
           temperatureMin(20.0), temperatureMax(30.0),
-          densityMin(842.0), densityMax(858.0) {}
+          densityMin(842.0), densityMax(858.0),
+          targetCount(0), active(false), paused(false), finished(false) {}
 
     void run(int count, SensorSimulator& sensor) {
-        readings.clear();
-        for (int i = 1; i <= count; ++i) readings.push_back(sensor.read(i));
+        start(count);
+        while (active) takeReading(sensor);
     }
 
+    void start(int count) {
+        readings.clear();
+        targetCount = count;
+        active = true;
+        paused = false;
+        finished = false;
+    }
+    bool takeReading(SensorSimulator& sensor) {
+        if (!active || paused) return false;
+        readings.push_back(sensor.read(static_cast<int>(readings.size()) + 1));
+        if (static_cast<int>(readings.size()) >= targetCount) {
+            active = false;
+            finished = true;
+        }
+        return true;
+    }
+    void pause() { if (active) paused = true; }
+    void resume() { if (active) paused = false; }
+    void stop() { active = false; paused = false; finished = true; }
+    bool isActive() const { return active; }
+    bool isPaused() const { return paused; }
+    bool isFinished() const { return finished; }
+    int progress() const { return static_cast<int>(readings.size()); }
+    int target() const { return targetCount; }
+    const Measurement* latest() const { return readings.empty() ? NULL : &readings.back(); }
+    const string& getId() const { return id; }
+    const string& getSample() const { return sample; }
+    const vector<Measurement>& getReadings() const { return readings; }
+    string alertReason(const Measurement& m) const {
+        string reason;
+        if (m.temperature < temperatureMin) reason += "Temperature LOW; ";
+        if (m.temperature > temperatureMax) reason += "Temperature HIGH; ";
+        if (m.density < densityMin) reason += "Density LOW; ";
+        if (m.density > densityMax) reason += "Density HIGH; ";
+        return reason.empty() ? "Within simulated limits" : reason;
+    }
     bool hasData() const { return !readings.empty(); }
     bool isAlert(const Measurement& m) const {
         return m.temperature < temperatureMin || m.temperature > temperatureMax ||
@@ -134,7 +176,8 @@ public:
             cout << left << setw(10) << m.index << setw(18) << fixed << setprecision(2)
                  << m.temperature << setw(22) << m.density
                  << Color::use(isAlert(m) ? Color::red : Color::green)
-                 << (isAlert(m) ? "ALERT" : "OK") << Color::use(Color::reset) << "\n";
+                 << (isAlert(m) ? "ALERT" : "OK") << Color::use(Color::reset)
+                  << "  " << alertReason(m) << "\n";
         }
     }
     void printSummary() const {
@@ -151,6 +194,7 @@ public:
              << "Out-of-range readings: " << Color::use(alertCount() ? Color::red : Color::green)
              << alertCount() << Color::use(Color::reset) << "\n";
     }
+public:
     static string csvEscape(const string& text) {
         string escaped = "\"";
         for (size_t i = 0; i < text.size(); ++i) {
@@ -201,86 +245,176 @@ string readText(const string& prompt) {
 
 void showGuide() {
     cout << Color::use(Color::cyan) << "\n========== USER GUIDE ==========\n" << Color::use(Color::reset)
-         << "SetaLab simulates laboratory temperature and density readings.\n"
-         << "No physical instrument is connected.\n\n"
+         << "Simulated temperature and density; no hardware connected.\n\n"
          << Color::use(Color::bold) << Color::use(Color::green) << "QUICK START\n" << Color::use(Color::reset)
-         << "  1. Enter an experiment ID, e.g. EXP001.\n"
-         << "  2. Enter a sample name, e.g. Diesel.\n"
-         << "  3. Select option 1 and enter 10 for ten readings.\n"
-         << "  4. Select option 2 to inspect individual readings.\n"
-         << "  5. Select option 3 to view statistics and alerts.\n"
-         << "  6. Select option 4 to view readings sorted by temperature.\n"
-         << "  7. Select option 5 and enter results.csv to export.\n\n"
+         << "  1. Create an experiment (EXP001, Diesel).\n"
+         << "  2. Choose 1 to set a measurement target.\n"
+         << "  3. Choose 2 to take one reading, or 3 for an automatic batch.\n"
+         << "  4. Choose 4 to pause/resume; 5 to stop.\n"
+         << "  5. Choose 6 for the dashboard, 7 for readings, 8 for summary.\n\n"
          << Color::use(Color::bold) << Color::use(Color::blue) << "MENU REFERENCE\n" << Color::use(Color::reset)
-         << "  1: Generate 1-1000 simulated readings (replaces previous run).\n"
-         << "  2: Show reading number, temperature, density, and status.\n"
-         << "  3: Show averages, minimums, maximums, and alert count.\n"
-         << "  4: Display descending temperature order without changing stored data.\n"
-         << "  5: Save the current readings as a CSV file.\n"
-         << "  6: Show this guide again.\n"
-         << "  0: Exit the program.\n\n"
-         << Color::use(Color::bold) << Color::use(Color::red) << "ALERT RULES (SIMULATION ONLY)\n" << Color::use(Color::reset)
+         << "  1 Start/restart | 2 Step | 3 Auto-run | 4 Pause/resume | 5 Stop\n"
+         << "  6 Dashboard | 7 Readings | 8 Summary | 9 Sort | 10 Export CSV\n"
+         << "  11 Save to history | 12 View history | 13 New experiment\n"
+         << "  14 Help | 0 Exit\n\n"
+         << Color::use(Color::bold) << Color::use(Color::red) << "ALERT RULES (DEMO ONLY)\n" << Color::use(Color::reset)
          << "  Temperature outside 20-30 C or density outside 842-858 kg/m3\n"
-         << "  is marked ALERT. These are demonstration thresholds, not\n"
-         << "  validated limits for any real petroleum sample.\n\n"
+         << "  triggers an alert. These limits are NOT validated for real samples.\n\n"
          << Color::use(Color::bold) << Color::use(Color::magenta) << "CSV TIPS\n" << Color::use(Color::reset)
-         << "  Enter a filename ending in .csv, for example results.csv.\n"
-         << "  The file is written to the current working folder unless\n"
-         << "  you provide a path. Existing files with that name are replaced.\n"
-         << "  Open the exported file with Excel or a text editor.\n"
+         << "  Enter a .csv filename such as results.csv. Existing files are\n"
+         << "  overwritten. The file is saved in the working folder unless\n"
+         << "  you enter an absolute path. History uses a separate CSV file.\n"
          << "================================\n";
+}
+
+void showDashboard(const Experiment& experiment) {
+    cout << Color::use(Color::cyan) << "\n========== INSTRUMENT DASHBOARD ==========\n"
+         << Color::use(Color::reset)
+         << "Experiment: " << experiment.getId() << " | Sample: " << experiment.getSample() << "\n";
+    string state = experiment.isPaused() ? "PAUSED" :
+        experiment.isActive() ? "RUNNING" : experiment.isFinished() ? "STOPPED/COMPLETE" : "READY";
+    cout << "State: " << state << " | Progress: " << experiment.progress()
+         << "/" << experiment.target() << "\n";
+    const Measurement* m = experiment.latest();
+    if (m) {
+        cout << fixed << setprecision(2) << "Latest: " << m->temperature << " C, "
+             << m->density << " kg/m3\n";
+        cout << Color::use(experiment.isAlert(*m) ? Color::red : Color::green)
+             << experiment.alertReason(*m) << Color::use(Color::reset) << "\n";
+    } else cout << "No measurements yet.\n";
+    cout << "Alerts so far: " << experiment.alertCount() << "\n";
+}
+
+void showNewReading(const Experiment& experiment) {
+    const Measurement* m = experiment.latest();
+    if (!m) return;
+    cout << fixed << setprecision(2) << "Reading #" << m->index << ": "
+         << m->temperature << " C | " << m->density << " kg/m3 | "
+         << Color::use(experiment.isAlert(*m) ? Color::red : Color::green)
+         << experiment.alertReason(*m) << Color::use(Color::reset) << "\n";
+}
+
+// Append-only CSV history: each snapshot is identified by its experiment ID.
+bool saveHistory(const Experiment& experiment, const string& filename) {
+    if (!experiment.hasData()) return false;
+    bool header = true;
+    { ifstream existing(filename.c_str(), ios::binary | ios::ate);
+      if (existing && existing.tellg() > 0) header = false; }
+    ofstream out(filename.c_str(), ios::app);
+    if (!out) return false;
+    if (header) out << "experiment_id,sample,reading,temperature_c,density_kg_m3,status\n";
+    out << fixed << setprecision(2);
+    const vector<Measurement>& readings = experiment.getReadings();
+    for (size_t i = 0; i < readings.size(); ++i) {
+        const Measurement& m = readings[i];
+        out << Experiment::csvEscape(experiment.getId()) << ','
+            << Experiment::csvEscape(experiment.getSample()) << ','
+            << m.index << ',' << m.temperature << ',' << m.density << ','
+            << (experiment.isAlert(m) ? "ALERT" : "OK") << '\n';
+    }
+    out.flush();
+    return out.good();
+}
+
+void viewHistory(const string& filename) {
+    ifstream in(filename.c_str());
+    if (!in) { cout << "No saved history yet.\n"; return; }
+    string line;
+    cout << Color::use(Color::cyan) << "\n--- SAVED HISTORY (latest 15 lines) ---\n"
+         << Color::use(Color::reset);
+    vector<string> lines;
+    while (getline(in, line)) {
+        if (lines.size() == 15) lines.erase(lines.begin());
+        lines.push_back(line);
+    }
+    for (size_t i = 0; i < lines.size(); ++i) cout << lines[i] << '\n';
+    if (lines.empty()) cout << "History file is empty.\n";
 }
 
 int main() {
     Color::initialize();
-    cout << Color::use(Color::cyan) << "==============================================\n"
+    cout << Color::use(Color::cyan)
+         << "==============================================\n"
          << " SetaLab | Industrial Instrument Simulator\n"
-         << " C++ Console Prototype \n"
+         << " C++ Console Prototype v2.0\n"
          << " SIMULATED DATA ONLY - NOT A REAL INSTRUMENT\n"
          << "==============================================\n" << Color::use(Color::reset);
-    cout << "Tip: Enter 6 in the menu at any time to open the user guide.\n";
     showGuide();
-    cout << Color::use(Color::cyan) << "\n--- NEW EXPERIMENT ---\n" << Color::use(Color::reset);
     string id = readText("Experiment ID (e.g. EXP001): ");
     if (id.empty()) return 0;
     string sample = readText("Sample name (e.g. Diesel): ");
     if (sample.empty()) return 0;
     Experiment experiment(id, sample);
     SensorSimulator sensor;
+    const string historyFile = "experiment_history.csv";
     while (true) {
         cout << Color::use(Color::cyan) << "\n--- MAIN MENU ---\n" << Color::use(Color::reset)
-             << "1. Run simulated measurements\n"
-             << "2. View readings\n"
-             << "3. View summary and alerts\n"
-             << "4. Sort readings by temperature (high to low)\n"
-             << "5. Export results to CSV\n"
-             << "6. Help / User Guide\n"
-             << "0. Exit\n";
-        int choice = readInt("Choose an option (6 = Help): ", 0, 6);
-        if (choice == -1 || choice == 0) { cout << Color::use(Color::cyan) << "Goodbye!\n" << Color::use(Color::reset); break; }
-        if (choice == 6) { showGuide(); continue; }
+             << " 1. Start/restart experiment\n 2. Take next measurement\n"
+             << " 3. Auto-run remaining measurements\n 4. Pause / Resume\n"
+             << " 5. Stop experiment\n 6. Instrument dashboard\n"
+             << " 7. View readings\n 8. Summary and alerts\n"
+             << " 9. Sort by temperature\n10. Export CSV\n"
+             << "11. Save snapshot to history\n12. View saved history\n"
+             << "13. New experiment\n14. Help / User Guide\n 0. Exit\n";
+        int choice = readInt("Choose an option: ", 0, 14);
+        if (choice == -1 || choice == 0) { cout << "Goodbye!\n"; break; }
+        if (choice == 14) { showGuide(); continue; }
         if (choice == 1) {
-            int count = readInt("Number of measurements (1-1000): ", 1, 1000);
+            if (experiment.hasData())
+                cout << Color::use(Color::yellow)
+                     << "WARNING: Restart clears current readings. Export/save first if needed.\n"
+                     << Color::use(Color::reset);
+            int count = readInt("Target number of measurements (1-1000): ", 1, 1000);
             if (count == -1) break;
-            experiment.run(count, sensor);
-            cout << Color::use(Color::green) << "Completed " << count << " simulated measurements.\n" << Color::use(Color::reset)
-                 << "Next: choose 2 to view readings or 3 for summary and alerts.\n";
-        } else if (choice == 2) experiment.printReadings();
-        else if (choice == 3) experiment.printSummary();
-        else if (choice == 4) experiment.printReadings(true);
-        else if (choice == 5) {
-            if (!experiment.hasData()) { cout << "Run an experiment before exporting.\n"; continue; }
-            cout << "Tip: use results.csv; existing files with the same name will be overwritten.\n";
+            experiment.start(count);
+            cout << Color::use(Color::green) << "Experiment ready. Choose 2 or 3.\n"
+                 << Color::use(Color::reset);
+        } else if (choice == 2) {
+            if (experiment.takeReading(sensor)) showNewReading(experiment);
+            else cout << "Cannot take a reading. Start or resume the experiment first.\n";
+        } else if (choice == 3) {
+            if (!experiment.isActive() || experiment.isPaused()) {
+                cout << "Start or resume an experiment first.\n";
+            } else {
+                cout << "Running simulated readings...\n";
+                while (experiment.isActive() && !experiment.isPaused()) {
+                    experiment.takeReading(sensor);
+                    showNewReading(experiment);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                }
+                cout << "Batch completed.\n";
+            }
+        } else if (choice == 4) {
+            if (!experiment.isActive()) cout << "No active experiment.\n";
+            else if (experiment.isPaused()) { experiment.resume(); cout << "Resumed.\n"; }
+            else { experiment.pause(); cout << "Paused.\n"; }
+        } else if (choice == 5) {
+            if (!experiment.isActive()) cout << "No active experiment.\n";
+            else { experiment.stop(); cout << "Experiment stopped; collected data retained.\n"; }
+        } else if (choice == 6) showDashboard(experiment);
+        else if (choice == 7) experiment.printReadings();
+        else if (choice == 8) experiment.printSummary();
+        else if (choice == 9) experiment.printReadings(true);
+        else if (choice == 10) {
+            if (!experiment.hasData()) { cout << "No readings to export.\n"; continue; }
             string path = readText("CSV filename (e.g. results.csv): ");
             if (path.empty()) break;
-            if (path.size() < 5 || path.substr(path.size() - 4) != ".csv") {
-                cout << "Please use a filename ending in .csv. Export cancelled.\n";
-                continue;
+            if (path.size() < 5 || path.substr(path.size()-4) != ".csv") {
+                cout << "Filename must end with .csv.\n"; continue;
             }
-            bool saved = experiment.saveCsv(path);
-            cout << Color::use(saved ? Color::green : Color::red)
-                 << (saved ? "CSV saved successfully.\n" : "Could not save CSV. Check the path and permissions.\n")
-                 << Color::use(Color::reset);
+            cout << (experiment.saveCsv(path) ? "CSV saved successfully.\n" : "CSV save failed.\n");
+        } else if (choice == 11) {
+            cout << (saveHistory(experiment, historyFile) ? "Snapshot appended to experiment_history.csv.\n"
+                      : "No data or could not save history.\n");
+        } else if (choice == 12) viewHistory(historyFile);
+        else if (choice == 13) {
+            if (experiment.hasData()) cout << "Remember to export or save your current experiment first.\n";
+            string newId = readText("New experiment ID: ");
+            if (newId.empty()) break;
+            string newSample = readText("New sample name: ");
+            if (newSample.empty()) break;
+            experiment = Experiment(newId, newSample);
+            cout << "New experiment created.\n";
         }
     }
     return 0;
